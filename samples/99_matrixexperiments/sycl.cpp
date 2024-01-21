@@ -558,38 +558,51 @@ void check_results(
 
 
 #ifdef __SYCL_DEVICE_ONLY__ 
-using float8 = sycl::float8::vector_t;
-using short8 = sycl::short8::vector_t;
-using ushort8 = sycl::ushort8::vector_t;
-using int2 = sycl::int2::vector_t;
-using int8 = sycl::int8::vector_t;
-using uint8 = sycl::uint8::vector_t;
-#define __global __attribute__((opencl_global)) 
-#define as_long(x)   __builtin_bit_cast(long, x)
-#define as_short8(x)   __builtin_bit_cast(short8, x)
-#define as_int8(x)   __builtin_bit_cast(int8, x)
-#define as_uint8(x)   __builtin_bit_cast(uint8, x)
+#define SYCL_DEVICE_BUILTIN(x) SYCL_EXTERNAL extern "C" x
+#define SYCL_DEVICE_OCL(x) SYCL_EXTERNAL x
+template<class T, int N> using vector_t = typename sycl::vec<T,N>::vector_t;
+template<class T, class F> T vec_as(const F& x) { return sycl::bit_cast<T>(x); } 
+#else 
+#define SYCL_DEVICE_BUILTIN(x) inline x { assert(false); }
+#define SYCL_DEVICE_OCL(x) inline x { assert(false); }
+template<class T, int N> using vector_t = sycl::vec<T,N>;
+template<class T, class F> T vec_as(const F& x) { return x.template as<T>(); }
+#endif
 
-extern "C" {
-    SYCL_EXTERNAL void __builtin_IB_subgroup_block_write_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord, uint8 data);
-    SYCL_EXTERNAL ushort8 __builtin_IB_subgroup_block_read_flat_u16_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord);
-    SYCL_EXTERNAL uint8 __builtin_IB_subgroup_block_read_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord);
-}
+using float8 = vector_t<float, 8>;
+using short8 = vector_t<short, 8>;
+using ushort8 = vector_t<ushort, 8>;
+using int2 = vector_t<int, 2>;
+using int8 = vector_t<int, 8>;
+using uint8 = vector_t<uint, 8>;
+template<class T>
+using global_decorated = typename sycl::decorated_global_ptr<std::remove_pointer_t<T>>::pointer;
+template<class T> long as_long(const T &x) { return sycl::bit_cast<long>(x); }
+template<class T> short8 as_short8(const T& x) { return vec_as<short8>(x); }
+template<class T> int8 as_int8(const T& x)   { return vec_as<int8>(x); }
+template<class T> uint8 as_uint8(const T& x)  { return vec_as<uint8>(x); }
 
-void intel_subgroup_block_write_u32_m8k16v1(__global void* base_address, int width, int height, int pitch, int2 coord, uint8 data)
+SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_write_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord, uint8 data));
+SYCL_DEVICE_BUILTIN(ushort8 __builtin_IB_subgroup_block_read_flat_u16_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord));
+SYCL_DEVICE_BUILTIN(uint8 __builtin_IB_subgroup_block_read_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord));
+
+static void intel_subgroup_block_write_u32_m8k16v1(global_decorated<void*> base_address, int width, int height, int pitch, int2 coord, uint8 data)
 {
     __builtin_IB_subgroup_block_write_flat_u32_m8k16v1(as_long(base_address), width - 1, height - 1, pitch - 1, coord, data);
 }
-ushort8 intel_subgroup_block_read_u16_m8k16(const __global void *base_address, int width, int height, int pitch, int2 coord)
+static ushort8 intel_subgroup_block_read_u16_m8k16(global_decorated<const void*> base_address, int width, int height, int pitch, int2 coord)
 {
     return __builtin_IB_subgroup_block_read_flat_u16_m8k16v1(as_long(base_address), width - 1, height - 1, pitch - 1, coord);
 }
-uint8 intel_subgroup_block_read_u32_m8k16(const __global void* base_address, int width, int height, int pitch, int2 coord)
+inline uint8 intel_subgroup_block_read_u32_m8k16(global_decorated<const void*> base_address, int width, int height, int pitch, int2 coord)
 {
     return __builtin_IB_subgroup_block_read_flat_u32_m8k16v1(as_long(base_address), width - 1, height - 1, pitch - 1, coord);
 }
-SYCL_EXTERNAL float8 intel_sub_group_bf16_bf16_matrix_mad_k16(short8 a, int8 b, float8 acc);
-#endif
+SYCL_DEVICE_OCL(float8 intel_sub_group_bf16_bf16_matrix_mad_k16(short8 a, int8 b, float8 acc));
+
+#undef SYCL_DEVICE_BUILTIN
+#undef SYCL_DEVICE_OCL
+
 // template<int tM, int tN, int tK, int MM, int NN>
 // struct dpas_blockread_vnni_tiled;
 
@@ -632,7 +645,7 @@ static void go_dpas_blockread_vnni_tiled(
                 sycl::accessor accB { b, cgh, sycl::read_only };
                 sycl::accessor accC { c, cgh, sycl::write_only };
                 cgh.parallel_for/*<dpas_blockread_vnni_tiled<tM, tN, tK, MM, NN>>*/(sycl::nd_range<2>{{ M/tM/MM, N/NN }, { 1, 16}},
-                 [accA,accB,accC,K](sycl::nd_item<2> id) [[sycl::reqd_sub_group_size(16)]] {
+                 [=](sycl::nd_item<2> id) [[sycl::reqd_sub_group_size(16)]] {
     // const int tM = 8;
     // const int tN = 16;
     // const int M = get_global_size(1) * tM;
@@ -647,8 +660,6 @@ static void go_dpas_blockread_vnni_tiled(
     auto A = accA.get_multi_ptr<sycl::access::decorated::yes>().get();
     auto B = accB.get_multi_ptr<sycl::access::decorated::yes>().get();
     auto C = accC.get_multi_ptr<sycl::access::decorated::yes>().get();
-
-#ifdef __SYCL_DEVICE_ONLY__ 
 
     float8 sum[MM][NN];
     for (int mm = 0; mm < MM; mm++) {
@@ -680,7 +691,6 @@ static void go_dpas_blockread_vnni_tiled(
             intel_subgroup_block_write_u32_m8k16v1(C, N * sizeof(float), M, N * sizeof(float), int2{n + nn * tN, m + mm * tM}, as_uint8(sum[mm][nn]));
         }
     }
-#endif
 });}).wait_and_throw();
         //     cl::Event event;
         //     auto start = test_clock::now();
