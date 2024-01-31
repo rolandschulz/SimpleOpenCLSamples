@@ -17,6 +17,8 @@
 #include <vector>
 
 #include "bfloat16.hpp"
+
+#include <cute/tensor.hpp>
 // #include "util.hpp"
 
 using test_clock = std::chrono::high_resolution_clock;
@@ -572,7 +574,7 @@ template<class T, class F> T vec_as(const F& x) { return x.template as<T>(); }
 using float8 = vector_t<float, 8>;
 using short8 = vector_t<short, 8>;
 using ushort8 = vector_t<ushort, 8>;
-using int2 = vector_t<int, 2>;
+using int2_ = vector_t<int, 2>; //int2 conflicts with vectortypes.h - shouldn't be included
 using int8 = vector_t<int, 8>;
 using uint8 = vector_t<uint, 8>;
 template<class T>
@@ -582,23 +584,23 @@ template<class T> short8 as_short8(const T& x) { return vec_as<short8>(x); }
 template<class T> int8 as_int8(const T& x)   { return vec_as<int8>(x); }
 template<class T> uint8 as_uint8(const T& x)  { return vec_as<uint8>(x); }
 
-SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_write_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord, uint8 data));
-SYCL_DEVICE_BUILTIN(ushort8 __builtin_IB_subgroup_block_read_flat_u16_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord));
-SYCL_DEVICE_BUILTIN(uint8 __builtin_IB_subgroup_block_read_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2 coord));
+SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_write_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2_ coord, uint8 data));
+SYCL_DEVICE_BUILTIN(ushort8 __builtin_IB_subgroup_block_read_flat_u16_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2_ coord));
+SYCL_DEVICE_BUILTIN(uint8 __builtin_IB_subgroup_block_read_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2_ coord));
 
-static void intel_subgroup_block_write_u32_m8k16v1(global_decorated<void*> base_address, int width, int height, int pitch, int2 coord, uint8 data)
+static void intel_subgroup_block_write_u32_m8k16v1(global_decorated<void*> base_address, int width, int height, int pitch, int2_ coord, uint8 data)
 {
     __builtin_IB_subgroup_block_write_flat_u32_m8k16v1(as_long(base_address), width - 1, height - 1, pitch - 1, coord, data);
 }
-static ushort8 intel_subgroup_block_read_u16_m8k16(global_decorated<const void*> base_address, int width, int height, int pitch, int2 coord)
+static ushort8 intel_subgroup_block_read_u16_m8k16(global_decorated<const void*> base_address, int width, int height, int pitch, int2_ coord)
 {
     return __builtin_IB_subgroup_block_read_flat_u16_m8k16v1(as_long(base_address), width - 1, height - 1, pitch - 1, coord);
 }
-inline uint8 intel_subgroup_block_read_u32_m8k16(global_decorated<const void*> base_address, int width, int height, int pitch, int2 coord)
+inline uint8 intel_subgroup_block_read_u32_m8k16(global_decorated<const void*> base_address, int width, int height, int pitch, int2_ coord)
 {
     return __builtin_IB_subgroup_block_read_flat_u32_m8k16v1(as_long(base_address), width - 1, height - 1, pitch - 1, coord);
 }
-SYCL_DEVICE_OCL(float8 intel_sub_group_bf16_bf16_matrix_mad_k16(short8 a, int8 b, float8 acc));
+// SYCL_DEVICE_OCL(float8 intel_sub_group_bf16_bf16_matrix_mad_k16(short8 a, int8 b, float8 acc));
 
 #undef SYCL_DEVICE_BUILTIN
 #undef SYCL_DEVICE_OCL
@@ -671,12 +673,12 @@ static void go_dpas_blockread_vnni_tiled(
     for (int k = 0; k < K; k += tK) {
         short8  aData[MM];
         for (int mm = 0; mm < MM; mm++) {
-            aData[mm] = as_short8(intel_subgroup_block_read_u16_m8k16(A, K * sizeof(ushort), M, K * sizeof(ushort), int2{k, m + mm * tM}));
+            aData[mm] = as_short8(intel_subgroup_block_read_u16_m8k16(A, K * sizeof(ushort), M, K * sizeof(ushort), int2_{k, m + mm * tM}));
         }
 
         int8    bData[NN];
         for (int nn = 0; nn < NN; nn++) {
-            bData[nn] = as_int8(intel_subgroup_block_read_u32_m8k16(B, N * sizeof(uint), K, N * sizeof(uint), int2{n + nn * tN, k / 2}));
+            bData[nn] = as_int8(intel_subgroup_block_read_u32_m8k16(B, N * sizeof(uint), K, N * sizeof(uint), int2_{n + nn * tN, k / 2}));
         }
 
         for (int mm = 0; mm < MM; mm++) {
@@ -688,7 +690,7 @@ static void go_dpas_blockread_vnni_tiled(
 
     for (int mm = 0; mm < MM; mm++) {
         for (int nn = 0; nn < NN; nn++) {
-            intel_subgroup_block_write_u32_m8k16v1(C, N * sizeof(float), M, N * sizeof(float), int2{n + nn * tN, m + mm * tM}, as_uint8(sum[mm][nn]));
+            intel_subgroup_block_write_u32_m8k16v1(C, N * sizeof(float), M, N * sizeof(float), int2_{n + nn * tN, m + mm * tM}, as_uint8(sum[mm][nn]));
         }
     }
 });}).wait_and_throw();
