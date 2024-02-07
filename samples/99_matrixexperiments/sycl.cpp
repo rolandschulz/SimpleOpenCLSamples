@@ -683,7 +683,13 @@ static void go_dpas_blockread_vnni_tiled(
 
         for (int mm = 0; mm < MM; mm++) {
             for (int nn = 0; nn < NN; nn++) {
-                sum[mm][nn] = intel_sub_group_bf16_bf16_matrix_mad_k16(aData[mm], bData[nn], sum[mm][nn]);
+                using namespace cute;
+                //cute::XE_8x16x16_BF16BF16F32F32_NN::fma(sum[mm][nn], aData[mm], bData[nn], sum[mm][nn]);
+                Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData[mm]), make_shape(Int<8>{}));
+                Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData[mm]), make_shape(Int<16>{}));
+                Tensor cT = make_tensor(make_rmem_ptr((float*)&sum[mm][nn]), make_shape(Int<8>{}));
+                MMA_Atom<MMA_Traits<XE_8x16x16_BF16BF16F32F32_NN>>().call(aT,bT,cT);
+                //sum[mm][nn] = intel_sub_group_bf16_bf16_matrix_mad_k16(aData[mm], bData[nn], sum[mm][nn]);
             }
         }
     }
