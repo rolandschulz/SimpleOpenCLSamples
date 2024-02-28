@@ -558,35 +558,26 @@ void check_results(
 //     }
 // }
 
+// from cutlass 3.4. current port is on 3.2 and needs to be rebased
+template <class Tuple>
+CUTE_HOST_DEVICE constexpr
+auto
+make_inttuple_iter(Tuple const& t) {
+  return ArithmeticTupleIterator(as_arithmetic_tuple(t));
+}
 
 #ifdef __SYCL_DEVICE_ONLY__ 
-#define SYCL_DEVICE_BUILTIN(x) SYCL_EXTERNAL extern "C" x
-#define SYCL_DEVICE_OCL(x) SYCL_EXTERNAL x
-template<class T, int N> using vector_t = typename sycl::vec<T,N>::vector_t;
 template<class T, class F> T vec_as(const F& x) { return sycl::bit_cast<T>(x); } 
 #else 
-#define SYCL_DEVICE_BUILTIN(x) inline x { assert(false); }
-#define SYCL_DEVICE_OCL(x) inline x { assert(false); }
-template<class T, int N> using vector_t = sycl::vec<T,N>;
 template<class T, class F> T vec_as(const F& x) { return x.template as<T>(); }
 #endif
 
-using float8 = vector_t<float, 8>;
-using short8 = vector_t<short, 8>;
-using ushort8 = vector_t<ushort, 8>;
-using int2_ = vector_t<int, 2>; //int2 conflicts with vectortypes.h - shouldn't be included
-using int8 = vector_t<int, 8>;
-using uint8 = vector_t<uint, 8>;
 template<class T>
 using global_decorated = typename sycl::decorated_global_ptr<std::remove_pointer_t<T>>::pointer;
 template<class T> long as_long(const T &x) { return sycl::bit_cast<long>(x); }
 template<class T> short8 as_short8(const T& x) { return vec_as<short8>(x); }
 template<class T> int8 as_int8(const T& x)   { return vec_as<int8>(x); }
 template<class T> uint8 as_uint8(const T& x)  { return vec_as<uint8>(x); }
-
-SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_write_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2_ coord, uint8 data));
-SYCL_DEVICE_BUILTIN(ushort8 __builtin_IB_subgroup_block_read_flat_u16_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2_ coord));
-SYCL_DEVICE_BUILTIN(uint8 __builtin_IB_subgroup_block_read_flat_u32_m8k16v1(long baseoffset, int width_minus_one, int height_minus_one, int pitch_minus_one, int2_ coord));
 
 static void intel_subgroup_block_write_u32_m8k16v1(global_decorated<void*> base_address, int width, int height, int pitch, int2_ coord, uint8 data)
 {
@@ -600,13 +591,6 @@ inline uint8 intel_subgroup_block_read_u32_m8k16(global_decorated<const void*> b
 {
     return __builtin_IB_subgroup_block_read_flat_u32_m8k16v1(as_long(base_address), width - 1, height - 1, pitch - 1, coord);
 }
-// SYCL_DEVICE_OCL(float8 intel_sub_group_bf16_bf16_matrix_mad_k16(short8 a, int8 b, float8 acc));
-
-#undef SYCL_DEVICE_BUILTIN
-#undef SYCL_DEVICE_OCL
-
-// template<int tM, int tN, int tK, int MM, int NN>
-// struct dpas_blockread_vnni_tiled;
 
 template<int tM, int tN, int tK, int MM, int NN>
 static void go_dpas_blockread_vnni_tiled(
@@ -670,6 +654,12 @@ static void go_dpas_blockread_vnni_tiled(
         }
     }
 
+    using namespace cute;
+    // TiledMMA<MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>,
+    //          Layout<Shape<_1, _1, _1>>, Layout<Shape<Int<MM>, Int<NN>, _1>>>
+    //     tiled_mma;
+    auto A_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((ushort*)A), make_shape(M, K))); //cast should probably not be here
+    auto B_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((uint*)B), make_shape(K, N)));
     for (int k = 0; k < K; k += tK) {
         short8  aData[MM];
         for (int mm = 0; mm < MM; mm++) {
@@ -680,18 +670,10 @@ static void go_dpas_blockread_vnni_tiled(
         for (int nn = 0; nn < NN; nn++) {
             bData[nn] = as_int8(intel_subgroup_block_read_u32_m8k16(B, N * sizeof(uint), K, N * sizeof(uint), int2_{n + nn * tN, k / 2}));
         }
-
-        for (int mm = 0; mm < MM; mm++) {
-            for (int nn = 0; nn < NN; nn++) {
-                using namespace cute;
-                //cute::XE_8x16x16_BF16BF16F32F32_NN::fma(sum[mm][nn], aData[mm], bData[nn], sum[mm][nn]);
-                Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData[mm]), make_shape(Int<8>{}));
-                Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData[mm]), make_shape(Int<16>{}));
-                Tensor cT = make_tensor(make_rmem_ptr((float*)&sum[mm][nn]), make_shape(Int<8>{}));
-                MMA_Atom<MMA_Traits<XE_8x16x16_BF16BF16F32F32_NN>>().call(aT,bT,cT);
-                //sum[mm][nn] = intel_sub_group_bf16_bf16_matrix_mad_k16(aData[mm], bData[nn], sum[mm][nn]);
-            }
-        }
+        Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData), Layout<Shape<_1, Int<MM>>,Stride<_1, _8>>{});
+        Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData), Layout<Shape<_1, Int<NN>>,Stride<_1, _16>>{});
+        Tensor cT = make_tensor(make_rmem_ptr((float*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>,Stride<_1, Int<8*NN>, _8>>{});
+        gemm(MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>(), aT, bT, cT);
     }
 
     for (int mm = 0; mm < MM; mm++) {
@@ -922,6 +904,7 @@ int main(int argc, char** argv)
     // go_dpas_blockread_vnni<4, 16, 16>(context, program, queue, C, A, Bvnni, M, N, K, C_ref);
     // go_dpas_blockread_vnni<8, 16, 16>(context, program, queue, C, A, Bvnni, M, N, K, C_ref);
 
+    go_dpas_blockread_vnni_tiled<8, 16, 16, 1, 1>(queue, C_vec, A, Bvnni, M, N, K, C_ref);
     go_dpas_blockread_vnni_tiled<8, 16, 16, 2, 1>(queue, C_vec, A, Bvnni, M, N, K, C_ref);
     go_dpas_blockread_vnni_tiled<8, 16, 16, 1, 2>(queue, C_vec, A, Bvnni, M, N, K, C_ref);
     go_dpas_blockread_vnni_tiled<8, 16, 16, 2, 2>(queue, C_vec, A, Bvnni, M, N, K, C_ref);
