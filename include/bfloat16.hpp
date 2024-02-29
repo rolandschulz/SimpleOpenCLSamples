@@ -100,14 +100,14 @@ public:
   friend type operator op(const bfloat16 &lhs, const bfloat16 &rhs) {          \
     return type{static_cast<float>(lhs) op static_cast<float>(rhs)};           \
   }                                                                            \
-  template <typename T>                                                        \
-  friend type operator op(const bfloat16 &lhs, const T &rhs) {                 \
-    return type{static_cast<float>(lhs) op static_cast<float>(rhs)};           \
-  }                                                                            \
-  template <typename T>                                                        \
-  friend type operator op(const T &lhs, const bfloat16 &rhs) {                 \
-    return type{static_cast<float>(lhs) op static_cast<float>(rhs)};           \
-  }
+  // template <typename T>                                                        \
+  // friend type operator op(const bfloat16 &lhs, const T &rhs) {                 \
+  //   return type{static_cast<float>(lhs) op static_cast<float>(rhs)};           \
+  // }                                                                            \
+  // template <typename T>                                                        \
+  // friend type operator op(const T &lhs, const bfloat16 &rhs) {                 \
+  //   return type{static_cast<float>(lhs) op static_cast<float>(rhs)};           \
+  // }
   OP(bfloat16, +)
   OP(bfloat16, -)
   OP(bfloat16, *)

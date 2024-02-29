@@ -19,6 +19,7 @@
 #include "bfloat16.hpp"
 
 #include <cute/tensor.hpp>
+#include <cute/numeric/arithmetic_tuple.hpp>
 // #include "util.hpp"
 
 using test_clock = std::chrono::high_resolution_clock;
@@ -559,12 +560,21 @@ void check_results(
 // }
 
 // from cutlass 3.4. current port is on 3.2 and needs to be rebased
+namespace cute {
 template <class Tuple>
 CUTE_HOST_DEVICE constexpr
 auto
 make_inttuple_iter(Tuple const& t) {
   return ArithmeticTupleIterator(as_arithmetic_tuple(t));
 }
+
+template <class T0, class T1, class... Ts>
+CUTE_HOST_DEVICE constexpr
+auto
+make_inttuple_iter(T0 const& t0, T1 const& t1, Ts const&... ts) {
+  return make_inttuple_iter(cute::make_tuple(t0, t1, ts...));
+}
+} //namespace cute
 
 #ifdef __SYCL_DEVICE_ONLY__ 
 template<class T, class F> T vec_as(const F& x) { return sycl::bit_cast<T>(x); } 
@@ -658,18 +668,25 @@ static void go_dpas_blockread_vnni_tiled(
     // TiledMMA<MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>,
     //          Layout<Shape<_1, _1, _1>>, Layout<Shape<Int<MM>, Int<NN>, _1>>>
     //     tiled_mma;
+    
     auto A_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((ushort*)A), make_shape(M, K))); //cast should probably not be here
     auto B_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((uint*)B), make_shape(K, N)));
     for (int k = 0; k < K; k += tK) {
-        short8  aData[MM];
+        ushort8  aData[MM];
+        //Tensor a = make_tensor(make_inttuple_iter(k,m), Layout<Shape<_1, Int<MM>>, Stride<_1, Int<tM>>>{});
+        Tensor aS = make_tensor(make_inttuple_iter(m), Layout<Shape<Int<MM>>, Stride<Int<tM>>>{});
+        Tensor aD = make_tensor(make_rmem_ptr(aData), Layout<Shape<Int<MM>>,Stride<_8>>{});
+
+        //copy(A_copy, aS, aD);
         for (int mm = 0; mm < MM; mm++) {
-            aData[mm] = as_short8(intel_subgroup_block_read_u16_m8k16(A, K * sizeof(ushort), M, K * sizeof(ushort), int2_{k, m + mm * tM}));
+            aData[mm] = intel_subgroup_block_read_u16_m8k16(A, K * sizeof(ushort), M, K * sizeof(ushort), int2_{k, m + mm * tM});
         }
 
         int8    bData[NN];
         for (int nn = 0; nn < NN; nn++) {
             bData[nn] = as_int8(intel_subgroup_block_read_u32_m8k16(B, N * sizeof(uint), K, N * sizeof(uint), int2_{n + nn * tN, k / 2}));
         }
+        
         Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData), Layout<Shape<_1, Int<MM>>,Stride<_1, _8>>{});
         Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData), Layout<Shape<_1, Int<NN>>,Stride<_1, _16>>{});
         Tensor cT = make_tensor(make_rmem_ptr((float*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>,Stride<_1, Int<8*NN>, _8>>{});
