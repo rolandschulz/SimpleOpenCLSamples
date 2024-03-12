@@ -671,25 +671,22 @@ static void go_dpas_blockread_vnni_tiled(
     
     auto A_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((ushort*)A), make_shape(M, K))); //cast should probably not be here
     auto B_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((uint*)B), make_shape(K, N)));
+    //TODO: - create tensors outside loop
+    //      - create copy atom for write
+    //      - remove casts
+    ushort8  aData[MM];
+    Tensor aD = make_tensor(make_rmem_ptr(aData), Layout<Shape<_1, Int<MM>>>{});
+    int8    bData[NN];
+    Tensor bD = make_tensor(make_rmem_ptr((uint8*)bData), Layout<Shape<_1, Int<NN>>>{}); //TODO: remove cast
+
+    Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData), Layout<Shape<_1, Int<MM>>,Stride<_1, _8>>{});
+    Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData), Layout<Shape<_1, Int<NN>>,Stride<_1, _16>>{});
+    Tensor cT = make_tensor(make_rmem_ptr((float*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>,Stride<_1, Int<8*NN>, _8>>{});
     for (int k = 0; k < K; k += tK) {
-        ushort8  aData[MM];
-        //Tensor a = make_tensor(make_inttuple_iter(k,m), Layout<Shape<_1, Int<MM>>, Stride<_1, Int<tM>>>{});
-        Tensor aS = make_tensor(make_inttuple_iter(m), Layout<Shape<Int<MM>>, Stride<Int<tM>>>{});
-        Tensor aD = make_tensor(make_rmem_ptr(aData), Layout<Shape<Int<MM>>,Stride<_8>>{});
-
-        //copy(A_copy, aS, aD);
-        for (int mm = 0; mm < MM; mm++) {
-            aData[mm] = intel_subgroup_block_read_u16_m8k16(A, K * sizeof(ushort), M, K * sizeof(ushort), int2_{k, m + mm * tM});
-        }
-
-        int8    bData[NN];
-        for (int nn = 0; nn < NN; nn++) {
-            bData[nn] = as_int8(intel_subgroup_block_read_u32_m8k16(B, N * sizeof(uint), K, N * sizeof(uint), int2_{n + nn * tN, k / 2}));
-        }
-        
-        Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData), Layout<Shape<_1, Int<MM>>,Stride<_1, _8>>{});
-        Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData), Layout<Shape<_1, Int<NN>>,Stride<_1, _16>>{});
-        Tensor cT = make_tensor(make_rmem_ptr((float*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>,Stride<_1, Int<8*NN>, _8>>{});
+        Tensor aS = make_tensor(make_inttuple_iter(k,m), make_layout(Shape<_1, Int<MM>>{}, make_stride(_1{}, tM*E<1>{})));
+        Tensor bS = make_tensor(make_inttuple_iter(n,k/2), make_layout(Shape<_1, Int<NN>>{}, make_stride(_1{}, tN*E<0>{})));
+        copy(A_copy, aS, aD);
+        copy(B_copy, bS, bD);
         gemm(MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>(), aT, bT, cT);
     }
 
