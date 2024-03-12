@@ -679,14 +679,15 @@ static void go_dpas_blockread_vnni_tiled(
     int8    bData[NN];
     Tensor bD = make_tensor(make_rmem_ptr((uint8*)bData), Layout<Shape<_1, Int<NN>>>{}); //TODO: remove cast
 
+    Tensor aS = make_tensor(make_inttuple_iter(0,m), make_layout(make_shape(_1{}, K, Int<MM>{}), make_stride(_1{}, E<0>{}, tM*E<1>{})));
+    Tensor bS = make_tensor(make_inttuple_iter(n,0), make_layout(make_shape(_1{}, Int<NN>{}, K), make_stride(_1{}, tN*E<0>{}, E<1>{})));
+
     Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData), Layout<Shape<_1, Int<MM>>,Stride<_1, _8>>{});
     Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData), Layout<Shape<_1, Int<NN>>,Stride<_1, _16>>{});
     Tensor cT = make_tensor(make_rmem_ptr((float*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>,Stride<_1, Int<8*NN>, _8>>{});
     for (int k = 0; k < K; k += tK) {
-        Tensor aS = make_tensor(make_inttuple_iter(k,m), make_layout(Shape<_1, Int<MM>>{}, make_stride(_1{}, tM*E<1>{})));
-        Tensor bS = make_tensor(make_inttuple_iter(n,k/2), make_layout(Shape<_1, Int<NN>>{}, make_stride(_1{}, tN*E<0>{})));
-        copy(A_copy, aS, aD);
-        copy(B_copy, bS, bD);
+        copy(A_copy, aS(_, k, _), aD);
+        copy(B_copy, bS(_, _, k/2), bD);
         gemm(MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>(), aT, bT, cT);
     }
 
