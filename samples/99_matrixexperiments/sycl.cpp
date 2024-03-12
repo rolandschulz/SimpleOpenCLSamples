@@ -671,9 +671,10 @@ static void go_dpas_blockread_vnni_tiled(
     
     auto A_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((ushort*)A), make_shape(M, K))); //cast should probably not be here
     auto B_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((uint*)B), make_shape(K, N)));
-    //TODO: - create tensors outside loop
-    //      - create copy atom for write
-    //      - remove casts
+    auto C_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((uint*)C), make_shape(M, N)));
+    //TODO: - remove casts
+    //      - decide on how to deal with vector types
+    //      - create layouts with tiling/partitioning
     ushort8  aData[MM];
     Tensor aD = make_tensor(make_rmem_ptr(aData), Layout<Shape<_1, Int<MM>>>{});
     int8    bData[NN];
@@ -682,20 +683,19 @@ static void go_dpas_blockread_vnni_tiled(
     Tensor aS = make_tensor(make_inttuple_iter(0,m), make_layout(make_shape(_1{}, K, Int<MM>{}), make_stride(_1{}, E<0>{}, tM*E<1>{})));
     Tensor bS = make_tensor(make_inttuple_iter(n,0), make_layout(make_shape(_1{}, Int<NN>{}, K), make_stride(_1{}, tN*E<0>{}, E<1>{})));
 
-    Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData), Layout<Shape<_1, Int<MM>>,Stride<_1, _8>>{});
-    Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData), Layout<Shape<_1, Int<NN>>,Stride<_1, _16>>{});
-    Tensor cT = make_tensor(make_rmem_ptr((float*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>,Stride<_1, Int<8*NN>, _8>>{});
+    Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData), Layout<Shape<_1, Int<MM>>, Stride<_1, _8>>{});   //different stride from aD/bD because type is different
+    Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData), Layout<Shape<_1, Int<NN>>, Stride<_1, _16>>{});  
+    Tensor cT = make_tensor(make_rmem_ptr((float*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>, Stride<_1, Int<8*NN>, _8>>{});
     for (int k = 0; k < K; k += tK) {
         copy(A_copy, aS(_, k, _), aD);
         copy(B_copy, bS(_, _, k/2), bD);
         gemm(MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>(), aT, bT, cT);
     }
 
-    for (int mm = 0; mm < MM; mm++) {
-        for (int nn = 0; nn < NN; nn++) {
-            intel_subgroup_block_write_u32_m8k16v1(C, N * sizeof(float), M, N * sizeof(float), int2_{n + nn * tN, m + mm * tM}, as_uint8(sum[mm][nn]));
-        }
-    }
+    Tensor cD = make_tensor(make_inttuple_iter(n,m), make_layout(Shape<_1, Int<NN>, Int<MM>>{}, make_stride(_1{}, tN*E<0>{}, tM*E<1>{})));
+    Tensor cS = make_tensor(make_rmem_ptr((uint8*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>>{});
+    copy(C_copy, cS, cD);
+
 });}).wait_and_throw();
         //     cl::Event event;
         //     auto start = test_clock::now();
