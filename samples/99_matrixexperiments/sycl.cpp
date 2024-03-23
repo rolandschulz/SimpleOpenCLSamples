@@ -657,44 +657,31 @@ static void go_dpas_blockread_vnni_tiled(
     auto B = accB.get_multi_ptr<sycl::access::decorated::yes>().get();
     auto C = accC.get_multi_ptr<sycl::access::decorated::yes>().get();
 
-    float8 sum[MM][NN];
-    for (int mm = 0; mm < MM; mm++) {
-        for (int nn = 0; nn < NN; nn++) {
-            sum[mm][nn] = 0;
-        }
-    }
 
     using namespace cute;
-    // TiledMMA<MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>,
-    //          Layout<Shape<_1, _1, _1>>, Layout<Shape<Int<MM>, Int<NN>, _1>>>
-    //     tiled_mma;
-    
-    auto A_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((ushort*)A), make_shape(M, K))); //cast should probably not be here
-    auto B_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((uint*)B), make_shape(K, N)));
-    auto C_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr((uint*)C), make_shape(M, N)));
-    //TODO: - remove casts
-    //      - decide on how to deal with vector types
+
+    Tensor tAr = make_tensor<ushort8>(Shape<_1, Int<MM>>{});
+    Tensor tBr = make_tensor<uint8>(Shape<_1, Int<NN>>{});
+    Tensor tCr = make_tensor<float8>(Shape<_1, Int<MM>, Int<NN>>{});
+    clear(tCr);
+
+    auto A_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr(A), make_shape(M, K)));
+    auto B_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr(B), make_shape(K, N)));
+    auto C_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr(C), make_shape(M, N)));
+    //TODO: - decide on how to deal with vector types
     //      - create layouts with tiling/partitioning
-    ushort8  aData[MM];
-    Tensor aD = make_tensor(make_rmem_ptr(aData), Layout<Shape<_1, Int<MM>>>{});
-    int8    bData[NN];
-    Tensor bD = make_tensor(make_rmem_ptr((uint8*)bData), Layout<Shape<_1, Int<NN>>>{}); //TODO: remove cast
 
-    Tensor aS = make_tensor(make_inttuple_iter(0,m), make_layout(make_shape(_1{}, K, Int<MM>{}), make_stride(_1{}, E<0>{}, tM*E<1>{})));
-    Tensor bS = make_tensor(make_inttuple_iter(n,0), make_layout(make_shape(_1{}, Int<NN>{}, K), make_stride(_1{}, tN*E<0>{}, E<1>{})));
+    Tensor tAi = make_tensor(make_inttuple_iter(m, 0), make_layout(make_shape(_1{}, Int<MM>{}, K), make_stride(_1{}, tM*E<0>{}, E<1>{})));
+    Tensor tBi = make_tensor(make_inttuple_iter(0, n), make_layout(make_shape(_1{}, K, Int<NN>{}), make_stride(_1{}, E<0>{}, tN*E<1>{})));
+    Tensor tCi = make_tensor(make_inttuple_iter(m, n), make_layout(Shape<_1, Int<MM>, Int<NN>>{}, make_stride(_1{}, tM*E<0>{}, tN*E<1>{})));
+    TiledMMA<MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>> tiled_mma; 
 
-    Tensor aT = make_tensor(make_rmem_ptr((bfloat16*)&aData), Layout<Shape<_1, Int<MM>>, Stride<_1, _8>>{});   //different stride from aD/bD because type is different
-    Tensor bT = make_tensor(make_rmem_ptr((bfloat16*)&bData), Layout<Shape<_1, Int<NN>>, Stride<_1, _16>>{});  
-    Tensor cT = make_tensor(make_rmem_ptr((float*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>, Stride<_1, Int<8*NN>, _8>>{});
     for (int k = 0; k < K; k += tK) {
-        copy(A_copy, aS(_, k, _), aD);
-        copy(B_copy, bS(_, _, k/2), bD);
-        gemm(MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>(), aT, bT, cT);
+        copy(A_copy, tAi(_, _, k), tAr);
+        copy(B_copy, tBi(_, k/2, _), tBr);
+        gemm(tiled_mma, tAr, tBr, tCr);
     }
-
-    Tensor cD = make_tensor(make_inttuple_iter(n,m), make_layout(Shape<_1, Int<NN>, Int<MM>>{}, make_stride(_1{}, tN*E<0>{}, tM*E<1>{})));
-    Tensor cS = make_tensor(make_rmem_ptr((uint8*)&sum), Layout<Shape<_1, Int<MM>, Int<NN>>>{});
-    copy(C_copy, cS, cD);
+    copy(C_copy, tCr, tCi);
 
 });}).wait_and_throw();
         //     cl::Event event;
