@@ -32,6 +32,8 @@ bool wallclock = false;
 int testIterations = 16;
 float threshold = 0.01f;
 
+#define WARMUP_ITERATIONS 100
+
 std::string makeTestName(
     const std::string &func,
     size_t M, size_t N, size_t K)
@@ -152,6 +154,18 @@ void check_results(
             }
         }
     }
+}
+
+inline size_t time_event(sycl::event &e) {
+  // get start and end times
+  cl_ulong start_time =
+      e.template get_profiling_info<sycl::info::event_profiling::command_start>();
+
+  cl_ulong end_time =
+      e.template get_profiling_info<sycl::info::event_profiling::command_end>();
+
+  // return the delta
+  return static_cast<size_t>(end_time - start_time);
 }
 
 // static float hw_time(cl::Event& event)
@@ -622,6 +636,7 @@ static void go_dpas_blockread_vnni_tiled(
     // if (kernel() == nullptr) {
     //     printf("unsupported.\n");
     // } else 
+    int total_iterations = WARMUP_ITERATIONS + testIterations;
     if (tM * MM > M) {
         printf("M is too small.\n");
     } else if (tN * NN > N) {
@@ -634,9 +649,11 @@ static void go_dpas_blockread_vnni_tiled(
         // queue.enqueueFillBuffer(C, 0, 0, C_ref.size());
 
         float best = 999.0f;
-        for (int test = 0; test < testIterations; test++) {
+        std::vector<size_t> event_times(total_iterations);
+        for (int test = 0; test < total_iterations; test++) {
             sycl::buffer c{c_vec};
-            queue.submit([&](sycl::handler& cgh) {
+            sycl::event ev;
+            ev = queue.submit([&](sycl::handler& cgh) {
                 sycl::accessor accA { a, cgh, sycl::read_only };
                 sycl::accessor accB { b, cgh, sycl::read_only };
                 sycl::accessor accC { c, cgh, sycl::write_only };
@@ -660,10 +677,9 @@ static void go_dpas_blockread_vnni_tiled(
 
     using namespace cute;
 
-    Tensor tAr = make_tensor<ushort8>(Shape<_1, Int<MM>>{});
-    Tensor tBr = make_tensor<uint8>(Shape<_1, Int<NN>>{});
-    Tensor tCr = make_tensor<float8>(Shape<_1, Int<MM>, Int<NN>>{});
-    clear(tCr);
+    Tensor tAr = make_tensor<ushort>(Shape<_8, Int<MM>>{});
+    Tensor tBr = make_tensor<uint>(Shape<_8, Int<NN>>{});
+    Tensor tCr = make_tensor<float>(Shape<_8, Int<MM>, Int<NN>>{});
 
     auto A_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr(A), make_shape(M, K)));
     auto B_copy = make_xe_2d_copy(make_tensor(make_gmem_ptr(B), make_shape(K, N)));
@@ -683,7 +699,10 @@ static void go_dpas_blockread_vnni_tiled(
     }
     copy(C_copy, tCr, tCi);
 
-});}).wait_and_throw();
+});});
+
+            ev.wait_and_throw();
+            event_times[test] = time_event(ev);
         //     cl::Event event;
         //     auto start = test_clock::now();
         //     queue.enqueueNDRangeKernel(kernel, cl::NullRange,
@@ -694,8 +713,15 @@ static void go_dpas_blockread_vnni_tiled(
         //     auto elapsed = wallclock ? sw_time.count() : hw_time(event);
         //     best = std::min(best, elapsed);
         }
-        auto gops = 2.0 * M * N * K / best / 1e9;
-        printf("Best in %f seconds (%f gops)\n", best, gops);
+
+        
+        double average_event_time = 0.f;
+        for (int i = WARMUP_ITERATIONS; i < total_iterations; i++) {
+            average_event_time += event_times[i];
+        }
+        average_event_time /= (testIterations * 1e3);
+        auto gops = 2.0 * M * N * K;
+        printf("Average is %f microseconds (%f gops)\n", average_event_time, gops / (1e3 * average_event_time));
 
         if (validate) {
             printf("Checking results... "); fflush(stdout);
@@ -787,7 +813,7 @@ int main(int argc, char** argv)
     printf("\tEmulate dpas for tN=8?: %s\n", emulate_tN8 ? "true" : "false");
     printf("\tEmulate dpas for tN=16?: %s\n", emulate_tN16 ? "true" : "false");
 
-    sycl::queue queue;
+    sycl::queue queue{{sycl::property::queue::enable_profiling()}};
     // cl::Context context{device};
     // cl::CommandQueue queue{context, device, CL_QUEUE_PROFILING_ENABLE};
 
