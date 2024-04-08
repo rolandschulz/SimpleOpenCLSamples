@@ -721,7 +721,7 @@ static void go_dpas_blockread_vnni_tiled(
         }
         average_event_time /= (testIterations * 1e3);
         auto gops = 2.0 * M * N * K;
-        printf("Best in %f microseconds (%f gops)\n", average_event_time, gops / (1e3 * average_event_time));
+        printf("Average is %f microseconds (%f gops)\n", average_event_time, gops / (1e3 * average_event_time));
 
         if (validate) {
             printf("Checking results... "); fflush(stdout);
