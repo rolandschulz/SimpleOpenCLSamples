@@ -573,22 +573,6 @@ inline size_t time_event(sycl::event &e) {
 //     }
 // }
 
-// from cutlass 3.4. current port is on 3.2 and needs to be rebased
-namespace cute {
-template <class Tuple>
-CUTE_HOST_DEVICE constexpr
-auto
-make_inttuple_iter(Tuple const& t) {
-  return ArithmeticTupleIterator(as_arithmetic_tuple(t));
-}
-
-template <class T0, class T1, class... Ts>
-CUTE_HOST_DEVICE constexpr
-auto
-make_inttuple_iter(T0 const& t0, T1 const& t1, Ts const&... ts) {
-  return make_inttuple_iter(cute::make_tuple(t0, t1, ts...));
-}
-} //namespace cute
 
 #ifdef __SYCL_DEVICE_ONLY__ 
 template<class T, class F> T vec_as(const F& x) { return sycl::bit_cast<T>(x); } 
@@ -690,7 +674,7 @@ static void go_dpas_blockread_vnni_tiled(
     Tensor tAi = make_tensor(make_inttuple_iter(m, 0), make_layout(make_shape(_1{}, Int<MM>{}, K), make_stride(_1{}, tM*E<0>{}, E<1>{})));
     Tensor tBi = make_tensor(make_inttuple_iter(0, n), make_layout(make_shape(_1{}, K, Int<NN>{}), make_stride(_1{}, E<0>{}, tN*E<1>{})));
     Tensor tCi = make_tensor(make_inttuple_iter(m, n), make_layout(Shape<_1, Int<MM>, Int<NN>>{}, make_stride(_1{}, tM*E<0>{}, tN*E<1>{})));
-    TiledMMA<MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>> tiled_mma; 
+    TiledMMA<MMA_Atom<XE_8x16x16_BF16BF16F32F32_NN>, Layout<Shape<_1,_1,_1>>> tiled_mma; 
 
     for (int k = 0; k < K; k += tK) {
         copy(A_copy, tAi(_, _, k), tAr);
